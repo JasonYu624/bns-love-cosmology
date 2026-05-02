@@ -1,0 +1,57 @@
+
+# --- Python / env ---
+__pycache__/
+*.py[cod]
+*$py.class
+env/
+venv/
+.venv/
+.conda/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Editor / temp files ---
+*~
+*.swp
+*.swo
+.DS_Store
+
+# --- Job scheduler outputs and logs ---
+*.out
+*.err
+*.log
+
+# --- Run outputs / large binaries ---
+# outdir* directories (PE/hier/results)
+outdir*/
+outdir_*/
+
+# resume/checkpoint files and binary results
+*_resume.*
+*_resume
+*.npz
+*.npy
+*.pkl
+*.h5
+*.hdf5
+
+# merged/aggregated results and temporary artifacts
+merged_*.npz
+merged_*.json
+
+# --- Generated plots / summaries ---
+*_posterior_augmented.csv
+*_reweighted_posterior_augmented.csv
+*_summary.json
+*_all_params_corner.png
+*_corner.png
+
+# --- Optional large data (uncomment if you prefer to ignore these) ---
+cosmic_explorer_*.txt
+*.interferometer
+
+# If any file was previously committed, remove it from Git index with:
+#   git rm --cached path/to/file
+# then commit the removal. Adjust patterns above as needed for your workflow.
+
