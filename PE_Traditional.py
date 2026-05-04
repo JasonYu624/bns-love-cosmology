@@ -51,11 +51,12 @@ def get_args():
     parser.add_argument("--rw-checkpoint", type=int, default=2000)
     parser.add_argument("--resume-reweight", action="store_true")
     parser.add_argument("--skip-reweight", action="store_true")
+    # Keep this flag only for backward compatibility with existing submit scripts.
     parser.add_argument(
         "--rw-method",
-        choices=["rejection", "systematic", "weighted"],
+        choices=["weighted"],
         default="weighted",
-        help="Reweight resampling method: bilby rejection, custom systematic, or weighted posterior sampling",
+        help="Reweight resampling method (weighted only).",
     )
     parser.add_argument(
         "--rw-use-nested-samples",
@@ -549,19 +550,6 @@ def summarize_log_weights(lnw):
     }
 
 
-def importance_resample_posterior(posterior, weights, n_samples=None):
-    n_samples = int(n_samples or len(posterior))
-    probs = np.asarray(weights, dtype=float)
-    probs = probs / np.sum(probs)
-    cdf = np.cumsum(probs)
-    cdf[-1] = 1.0
-    rng = np.random.default_rng(12345 + EVENT_INDEX)
-    positions = (rng.random() + np.arange(n_samples)) / n_samples
-    indices = np.searchsorted(cdf, positions, side="right")
-    indices = rng.permutation(indices)
-    return posterior.iloc[indices].reset_index(drop=True)
-
-
 def weighted_resample_posterior(posterior, weights, n_samples):
     w = np.asarray(weights, dtype=float)
     w = w / np.sum(w)
@@ -572,47 +560,6 @@ def weighted_resample_posterior(posterior, weights, n_samples):
         weights=w,
         random_state=12345 + EVENT_INDEX,
     ).reset_index(drop=True)
-
-
-def summarize_weights(weights):
-    finite = np.isfinite(weights) & (weights > 0)
-    finite_fraction = float(np.mean(finite))
-    if not finite.any():
-        return {
-            "ok": False,
-            "reason": "no finite positive weights",
-            "finite_fraction": finite_fraction,
-            "num_finite_weights": 0,
-            "ess_fraction": 0.0,
-            "max_normalized_weight": np.inf,
-        }
-
-    w = np.asarray(weights[finite], dtype=float)
-    sw = np.sum(w)
-    if sw <= 0.0 or not np.isfinite(sw):
-        return {
-            "ok": False,
-            "reason": "sum(weights) is non-finite or <= 0",
-            "finite_fraction": finite_fraction,
-            "num_finite_weights": int(finite.sum()),
-            "ess_fraction": 0.0,
-            "max_normalized_weight": np.inf,
-        }
-
-    w_norm = w / sw
-    ess = 1.0 / np.sum(w_norm ** 2)
-    ess_fraction = float(ess / len(w_norm))
-    max_normalized_weight = float(np.max(w_norm))
-    ok = finite_fraction == 1.0 and ess_fraction > 1.0e-3 and max_normalized_weight < 0.99
-    return {
-        "ok": bool(ok),
-        "reason": "ok" if ok else "pathological importance weights",
-        "finite_fraction": finite_fraction,
-        "num_finite_weights": int(finite.sum()),
-        "ess": float(ess),
-        "ess_fraction": ess_fraction,
-        "max_normalized_weight": max_normalized_weight,
-    }
 
 
 def compute_reweight_arrays(result_obj, old_likelihood, new_likelihood, use_nested):
@@ -641,68 +588,6 @@ def compute_reweight_arrays(result_obj, old_likelihood, new_likelihood, use_nest
     posterior["log_likelihood"] = new_ll
     posterior["log_prior"] = new_lp
     return res, posterior, lnw
-
-
-def reweight_posterior_systematic(result_obj, old_likelihood, new_likelihood):
-    res, posterior, lnw = compute_reweight_arrays(
-        result_obj, old_likelihood, new_likelihood, use_nested=bool(RW_USE_NESTED)
-    )
-    weights, diag = summarize_log_weights(lnw)
-    diag["resume_file"] = RESUME_FILE
-    if not diag["ok"]:
-        return None, diag
-
-    res.posterior = importance_resample_posterior(posterior, weights, n_samples=len(posterior))
-    if len(res.posterior) == 0:
-        diag.update(ok=False, reason="importance resampling kept no samples")
-        return None, diag
-    res.posterior = convert_traditional_bns(res.posterior)
-    res.label = RW_LABEL
-    if RW_USE_NESTED:
-        res.log_evidence += float(logsumexp(lnw))
-    else:
-        res.log_evidence += float(logsumexp(lnw) - np.log(len(posterior)))
-    res.meta_data["reweighted_using_importance_resampling"] = True
-    diag["resampling_method"] = "systematic_importance_resampling"
-    diag["n_resampled"] = int(len(res.posterior))
-    diag["n_eff_target"] = int(round(diag.get("ess", 0.0)))
-    return res, diag
-
-
-def reweight_posterior_rejection(result_obj, old_likelihood, new_likelihood):
-    res = copy.copy(result_obj)
-    res.posterior = ensure_dataframe(result_obj.posterior)
-    maybe_remove(RESUME_FILE, RW_CLEAN_RESUME)
-
-    rw_result, weights, new_ll, new_lp, old_ll, old_lp = bilby.core.result.reweight(
-        result=res,
-        label=RW_LABEL,
-        new_likelihood=new_likelihood,
-        new_prior=None,
-        old_likelihood=old_likelihood,
-        old_prior=None,
-        conversion_function=convert_traditional_bns,
-        npool=RW_NPOOL,
-        verbose_output=True,
-        resume_file=RESUME_FILE,
-        n_checkpoint=RW_N_CHECKPOINT,
-        use_nested_samples=RW_USE_NESTED,
-    )
-
-    diag = summarize_weights(np.asarray(weights, dtype=float))
-    diag["resume_file"] = RESUME_FILE
-    diag["resampling_method"] = "bilby_rejection_sampling"
-    diag["n_resampled"] = int(len(rw_result.posterior))
-    diag["use_nested_samples"] = bool(RW_USE_NESTED)
-    diag["n_raw_weights"] = int(len(weights))
-    diag["n_unique_rows"] = int(
-        len(
-            ensure_dataframe(rw_result.posterior)
-            .drop(columns=["log_likelihood", "log_prior"], errors="ignore")
-            .drop_duplicates()
-        )
-    )
-    return rw_result, diag
 
 
 def reweight_posterior_weighted(result_obj, old_likelihood, new_likelihood):
@@ -770,12 +655,7 @@ print(
 )
 print("Using nested samples." if rw_use_nested_effective else "Using posterior samples only.", flush=True)
 RW_USE_NESTED = rw_use_nested_effective
-if RW_METHOD == "systematic":
-    rw_result, diag = reweight_posterior_systematic(result_rw, likelihood, build_new_likelihood())
-elif RW_METHOD == "weighted":
-    rw_result, diag = reweight_posterior_weighted(result_rw, likelihood, build_new_likelihood())
-else:
-    rw_result, diag = reweight_posterior_rejection(result_rw, likelihood, build_new_likelihood())
+rw_result, diag = reweight_posterior_weighted(result_rw, likelihood, build_new_likelihood())
 diag["nested_samples_reason"] = nested_reason
 print("Reweight diagnostics:", json.dumps(diag, indent=2), flush=True)
 
