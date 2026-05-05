@@ -21,8 +21,8 @@ SNR_THRESH = float(os.environ.get("SNR_THRESH", "30.0"))
 # Selection-calibration mass proposal.
 # Kept flat by default to preserve the original script's intent.
 MASS_DIST = os.environ.get("MASS_DIST", "flat").lower()
-M_MIN = float(os.environ.get("M_MIN", "1.0"))
-M_MAX = float(os.environ.get("M_MAX", "1.7"))
+M_MIN = float(os.environ.get("M_MIN", "0.8"))
+M_MAX = float(os.environ.get("M_MAX", "1.8"))
 M_MU = float(os.environ.get("M_MU", "1.33"))
 M_SIGMA = float(os.environ.get("M_SIGMA", "0.09"))
 
@@ -154,7 +154,6 @@ waveform_arguments = dict(
     waveform_approximant="IMRPhenomXP_NRTidalv3",
     reference_frequency=FREF,
     minimum_frequency=FMIN,
-    fiducial=1,
 )
 _wg_cache = {}
 

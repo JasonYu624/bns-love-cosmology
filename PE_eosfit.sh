@@ -9,7 +9,7 @@
 #SBATCH --error=%x-%j.err
 #SBATCH --hint=nomultithread
 #SBATCH --account=andreasb
-##SBATCH --array=1-10
+#SBATCH --array=1-10
 
 set -eo pipefail
 export PS1=${PS1:-"batch"}
@@ -48,8 +48,8 @@ cd "${RUNDIR}"
 # Main PE settings
 # ======================
 ZERO_NOISE=0
-WIDEN_MC=0.1
-NLIVE=200
+WIDEN_MC=0.0002
+NLIVE=1000
 DELTA_SIGMA=1.0
 PE_NPOOL="${SLURM_CPUS_PER_TASK:-1}"
 
@@ -57,8 +57,8 @@ PE_NPOOL="${SLURM_CPUS_PER_TASK:-1}"
 # Labels / output
 # ======================
 EVENT_NAME=$(printf "event_%04d" "${EVENT_INDEX}")
-OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run_test"
-LABEL="bns_${EVENT_NAME}_eosfit_dyn_Mc0.1_test0428"
+OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run"
+LABEL="bns_${EVENT_NAME}_eosfit_dyn"
 
 # ======================
 # Reweight settings
@@ -66,12 +66,13 @@ LABEL="bns_${EVENT_NAME}_eosfit_dyn_Mc0.1_test0428"
 # ======================
 RW_NPOOL=4
 RW_N_CHECKPOINT=2000
-RW_METHOD="weighted"          # options: weighted, rejection, systematic
+RW_METHOD="weighted"          # options: weighted
 RW_USE_NESTED_SAMPLES=0       # 1 -> pass --rw-use-nested-samples
+SKY_FRAME="detector"          # options: detector, sky
 
 RESUME_DIR="${TMPDIR:-${OUTDIR}}"
 mkdir -p "${RESUME_DIR}"
-RW_RESUME_FILE="${RESUME_DIR}/${LABEL}_reweighted_weights_resume_Mc0.1.npz"
+RW_RESUME_FILE="${RESUME_DIR}/${LABEL}_reweighted_weights_resume.npz"
 
 echo "================================================="
 echo "Time: $(date)"
@@ -92,6 +93,7 @@ echo "RW_NPOOL=${RW_NPOOL}"
 echo "RW_N_CHECKPOINT=${RW_N_CHECKPOINT}"
 echo "RW_METHOD=${RW_METHOD}"
 echo "RW_USE_NESTED_SAMPLES=${RW_USE_NESTED_SAMPLES}"
+echo "SKY_FRAME=${SKY_FRAME}"
 echo "RW_RESUME_FILE=${RW_RESUME_FILE}"
 echo "TMPDIR=${TMPDIR:-not_set}"
 echo "================================================="
@@ -113,6 +115,7 @@ ARGS=(
   --rw-checkpoint "${RW_N_CHECKPOINT}"
   --rw-resume-file "${RW_RESUME_FILE}"
   --rw-method "${RW_METHOD}"
+  --sky-frame "${SKY_FRAME}"
 )
 
 if [ "${ZERO_NOISE}" = "1" ]; then

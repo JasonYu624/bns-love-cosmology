@@ -42,6 +42,12 @@ def get_args():
     parser.add_argument("--nlive", type=int, default=1000)
     parser.add_argument("--delta-sigma", type=float, default=1.0)
     parser.add_argument("--npool", type=int, default=1)
+    parser.add_argument(
+        "--sky-frame",
+        choices=["detector", "sky"],
+        default="detector",
+        help="Sky parameterization: detector uses zenith/azimuth, sky uses ra/dec.",
+    )
     parser.add_argument("--rw-npool", type=int, default=4)
     parser.add_argument("--rw-resume-file")
     parser.add_argument("--rw-checkpoint", type=int, default=2000)
@@ -116,6 +122,7 @@ WIDEN_MC = args.widen_mc
 NLIVE = args.nlive
 DELTA_SIGMA = args.delta_sigma
 NPOOL = args.npool
+SKY_FRAME = args.sky_frame
 
 H0_TRUE = float(Planck18.H0.value)
 RUN_REWEIGHT = not args.skip_reweight
@@ -286,6 +293,7 @@ def build_interferometers_with_exact_data(zero_noise=False):
 # 3. Detectors and waveform generators
 # =========================================================
 interferometers = build_interferometers_with_exact_data(zero_noise=ZERO_NOISE)
+REFERENCE_FRAME = interferometers if SKY_FRAME == "detector" else "sky"
 
 wg_rb = bilby.gw.WaveformGenerator(
     duration=duration,
@@ -308,8 +316,16 @@ wg_full = bilby.gw.WaveformGenerator(
 # =========================================================
 def make_priors():
     p = bilby.core.prior.PriorDict(conversion_function=convert_eosfit_to_lal_bns)
-    p["zenith"] = bilby.core.prior.Sine(name="zenith", latex_label="$\\kappa$")
-    p["azimuth"] = bilby.core.prior.Uniform(minimum=0.0, maximum=2.0*np.pi, boundary="periodic", name="azimuth")
+    if SKY_FRAME == "detector":
+        p["zenith"] = bilby.core.prior.Sine(name="zenith", latex_label="$\\kappa$")
+        p["azimuth"] = bilby.core.prior.Uniform(
+            minimum=0.0, maximum=2.0 * np.pi, boundary="periodic", name="azimuth"
+        )
+    else:
+        p["ra"] = bilby.core.prior.Uniform(
+            minimum=0.0, maximum=2.0 * np.pi, boundary="periodic", name="ra"
+        )
+        p["dec"] = bilby.core.prior.Cosine(name="dec")
     p["theta_jn"] = bilby.core.prior.Sine(name="theta_jn", latex_label="$\\theta_{JN}$")
     p["psi"] = bilby.core.prior.Uniform(minimum=0.0, maximum=np.pi, boundary="periodic", name="psi")
     p["phase"] = bilby.core.prior.Uniform(minimum=0.0, maximum=2.0*np.pi, boundary="periodic", name="phase")
@@ -338,7 +354,7 @@ def make_priors():
 
 m1_det = float(meta["mass_1_detector"])
 m2_det = float(meta["mass_2_detector"])
-Mc_inj = (m1_det * m2_det) ** (3.0 / 5.0) / (m1_det + m2_det) ** (1.0 / 5.0)
+Mc_inj = float(bilby.gw.conversion.component_masses_to_chirp_mass(m1_det, m2_det))
 q_inj = min(m1_det, m2_det) / max(m1_det, m2_det)
 
 priors = make_priors()
@@ -347,7 +363,8 @@ priors = make_priors()
 # =========================================================
 # 5. Fiducial and likelihood
 # =========================================================
-def get_zenith_azimuth(theta, phi, ifos):
+def theta_phi_to_zenith_azimuth(theta, phi, ifos):
+    """Inverse map for detector-frame sampling (theta/phi -> zenith/azimuth)."""
     rot = rotation_matrix_from_delta(ifos[0].vertex - ifos[1].vertex)
     rotated = rot.T @ np.array([
         np.sin(theta) * np.cos(phi),
@@ -361,7 +378,10 @@ def get_zenith_azimuth(theta, phi, ifos):
 
 gmst = greenwich_mean_sidereal_time(inj["geocent_time"])
 theta, phi = bilby.core.utils.conversion.ra_dec_to_theta_phi(inj["ra"], inj["dec"], gmst)
-zenith, azimuth = get_zenith_azimuth(theta, phi, interferometers)
+if SKY_FRAME == "detector":
+    zenith, azimuth = theta_phi_to_zenith_azimuth(theta, phi, interferometers)
+else:
+    zenith, azimuth = None, None
 
 fiducial_aug = add_ur_derived_parameters(
     dict(
@@ -378,8 +398,10 @@ fiducial_aug = add_ur_derived_parameters(
         psi=float(inj["psi"]),
         phase=float(inj.get("phase", 0.0)),
         geocent_time=float(inj["geocent_time"]),
-        zenith=float(zenith),
-        azimuth=float(azimuth),
+        zenith=float(zenith) if zenith is not None else None,
+        azimuth=float(azimuth) if azimuth is not None else None,
+        ra=float(inj["ra"]),
+        dec=float(inj["dec"]),
     )
 )
 
@@ -401,29 +423,24 @@ fiducial_parameters = dict(
     psi=float(fiducial_aug["psi"]),
     phase=float(fiducial_aug.get("phase", 0.0)),
     geocent_time=float(fiducial_aug["geocent_time"]),
-    zenith=float(fiducial_aug["zenith"]),
-    azimuth=float(fiducial_aug["azimuth"]),
+    ra=float(fiducial_aug["ra"]),
+    dec=float(fiducial_aug["dec"]),
 )
+if SKY_FRAME == "detector":
+    fiducial_parameters["zenith"] = float(fiducial_aug["zenith"])
+    fiducial_parameters["azimuth"] = float(fiducial_aug["azimuth"])
+    fiducial_parameters.pop("ra", None)
+    fiducial_parameters.pop("dec", None)
+else:
+    fiducial_parameters.pop("zenith", None)
+    fiducial_parameters.pop("azimuth", None)
 
-class SafeRelativeBinningGravitationalWaveTransient(
-    bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransient
-):
-    def log_likelihood_ratio(self, *args, **kwargs):
-        try:
-            logl_ratio = super().log_likelihood_ratio(*args, **kwargs)
-        except Exception:
-            return -np.inf
-        if (not np.isfinite(logl_ratio)) or (logl_ratio > 1000000.0):
-            return -np.inf
-        return logl_ratio
-
-
-likelihood = SafeRelativeBinningGravitationalWaveTransient(
+likelihood = bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransient(
     interferometers=interferometers,
     waveform_generator=wg_rb,
     fiducial_parameters=fiducial_parameters,
     update_fiducial_parameters=False,
-    reference_frame=interferometers,
+    reference_frame=REFERENCE_FRAME,
     time_reference="geocenter",
     distance_marginalization=False,
     phase_marginalization=True,
@@ -440,7 +457,7 @@ likelihood = SafeRelativeBinningGravitationalWaveTransient(
 print(f"=== Starting Dynesty Run for {EVENT_NAME} ===")
 print(
     f"ZERO_NOISE={ZERO_NOISE}, WIDEN_MC={WIDEN_MC}, "
-    f"DELTA_SIGMA={DELTA_SIGMA}, H0_TRUE={H0_TRUE}",
+    f"DELTA_SIGMA={DELTA_SIGMA}, H0_TRUE={H0_TRUE}, SKY_FRAME={SKY_FRAME}",
     flush=True,
 )
 
@@ -476,23 +493,6 @@ def ensure_dataframe(x):
     return pd.DataFrame(x)
 
 
-def validate_nested_samples(result_obj):
-    nested = getattr(result_obj, "nested_samples", None)
-    if nested is None:
-        raise RuntimeError("result.nested_samples is missing")
-    nested_df = ensure_dataframe(nested)
-    if len(nested_df) == 0:
-        raise RuntimeError("result.nested_samples is empty")
-    if "weights" not in nested_df.columns:
-        raise RuntimeError("result.nested_samples has no 'weights' column")
-    w = np.asarray(nested_df["weights"], dtype=float)
-    good = np.isfinite(w) & (w > 0.0)
-    if not np.any(good):
-        raise RuntimeError("result.nested_samples['weights'] has no finite positive entries")
-    return nested_df
-
-
-result.nested_samples = validate_nested_samples(result)
 result.save_to_file(overwrite=True, extension=RESULT_EXTENSION, outdir=outdir)
 print(
     f"Saved Result with nested samples to: "
@@ -523,6 +523,8 @@ def save_corner_and_csv(res, out_label, include_redshift=True):
         "chi_2",
         "zenith",
         "azimuth",
+        "ra",
+        "dec",
         "geocent_time",
         "lambda_tilde",
         "delta_lambda_tilde",
@@ -549,6 +551,8 @@ def save_corner_and_csv(res, out_label, include_redshift=True):
         "chi_2": r"$\\chi_2$",
         "zenith": r"$\\kappa$",
         "azimuth": r"$\\mathrm{azimuth}$",
+        "ra": r"$\\alpha$",
+        "dec": r"$\\delta$",
         "geocent_time": r"$t_c$",
         "lambda_tilde": r"$\\tilde{\\Lambda}$",
         "delta_lambda_tilde": r"$\\delta\\tilde{\\Lambda}$",
@@ -598,7 +602,7 @@ def build_new_likelihood():
     return bilby.gw.likelihood.GravitationalWaveTransient(
         interferometers=interferometers,
         waveform_generator=wg_full,
-        reference_frame=interferometers,
+        reference_frame=REFERENCE_FRAME,
         time_reference="geocenter",
         distance_marginalization=False,
         phase_marginalization=True,
@@ -757,7 +761,7 @@ if RW_USE_NESTED and not rw_use_nested_effective:
     )
 print(
     f"ZERO_NOISE={ZERO_NOISE}, WIDEN_MC={WIDEN_MC}, DELTA_SIGMA={DELTA_SIGMA}, "
-    f"RW_METHOD={RW_METHOD}, RW_USE_NESTED={rw_use_nested_effective}",
+    f"SKY_FRAME={SKY_FRAME}, RW_METHOD={RW_METHOD}, RW_USE_NESTED={rw_use_nested_effective}",
     flush=True,
 )
 print("Using nested samples." if rw_use_nested_effective else "Using posterior samples only.", flush=True)

@@ -29,14 +29,14 @@ export BILBY_SEED="${BILBY_SEED:-123}"
 export OUTDIR="${OUTDIR:-outdir_selection_calib_eosfit}"
 export LABEL="${LABEL:-bns_sel_calib_eosfit}"
 
-# 可选：selection mass distribution
-# flat: 和你原来 selection 脚本一致
-# trunc_gaussian: 更接近当前 population
+# Selection proposal. Keep this flat over the PE/hierarchy source-mass support
+# so the VT proposal covers the full recycling target support.
 export MASS_DIST="${MASS_DIST:-flat}"
 
-# 只有在 MASS_DIST=trunc_gaussian 时才会用到
-# export M_MIN="${M_MIN:-1.1}"
-# export M_MAX="${M_MAX:-2.25}"
+# Match PE_eosfit_reweight.py source-frame mass constraints.
+export M_MIN="${M_MIN:-0.8}"
+export M_MAX="${M_MAX:-1.8}"
+# 只有在 MASS_DIST=gaussian 时才会用到
 # export M_MU="${M_MU:-1.33}"
 # export M_SIGMA="${M_SIGMA:-0.09}"
 
@@ -55,6 +55,8 @@ echo "SCRIPT=${SCRIPT}"
 echo "OUTDIR=${OUTDIR}"
 echo "LABEL=${LABEL}"
 echo "MASS_DIST=${MASS_DIST}"
+echo "M_MIN=${M_MIN}"
+echo "M_MAX=${M_MAX}"
 echo "TARGET_SUCCESS=${TARGET_SUCCESS}"
 echo "CHUNK=${CHUNK}"
 python --version

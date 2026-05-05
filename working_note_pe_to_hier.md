@@ -375,6 +375,26 @@ For each sample, the hierarchical event density is
 
 Here \(J_i\) is the Jacobian taking us from the PE coordinates to the source-frame population coordinates.
 
+### 8.4 How the two \(H_0\)-sensitive pieces combine
+
+There are two distinct sources of information about \(H_0\).
+
+First, the single-event PE likelihood already constrains \(H_0\) through the Love-siren forward model:
+
+\[
+(d_L,H_0)\to z\to (m_1^{\rm src},m_2^{\rm src})\to
+(\lambda_1,\lambda_2)\to h(f).
+\]
+
+Second, the hierarchical recycling stage reweights the same correlated posterior samples by the population factors
+
+\[
+\pi_H(H_{0,i})\,\pi_z(z_i)\,\pi_m(m_{1,i}^{\rm src},m_{2,i}^{\rm src})\,J_i.
+\]
+
+Thus the mass and redshift population model also constrains \(H_0\), but it does so through the already-sampled correlations among
+\((H_0,d_L,z,m^{\rm src},\lambda)\). No additional bilby-style conversion function is needed at the hierarchical stage as long as the PE output CSV already stores the derived quantities and the hierarchical density includes the correct coordinate Jacobian.
+
 ---
 
 ## 9. The detector-frame to source-frame Jacobian
@@ -416,20 +436,47 @@ J
 In the implementation, this appears as
 
 \[
-J = \frac{dz}{dd_L}\times \frac{1}{(1+z)^2},
+J =
+\left|\frac{\partial(m_1^{\rm det},m_2^{\rm det})}
+{\partial(\mathcal{M}_c^{\rm det},q)}\right|
+\times
+\frac{dz}{dd_L}\times \frac{1}{(1+z)^2},
 \]
 
 up to the chosen storage convention for mass variables.
 
-In our current hierarchical script, this is represented explicitly as
+For our current sampled mass coordinates,
 
 \[
-\frac{dz}{dd_L} = \frac{1}{d d_L / dz},
-\qquad
-\text{implemented with } \texttt{wcosmo.wcosmo.dDLdz},
+\left|\frac{\partial(m_1^{\rm det},m_2^{\rm det})}
+{\partial(\mathcal{M}_c^{\rm det},q)}\right|
+=
+\mathcal{M}_c^{\rm det}(1+q)^{2/5}q^{-6/5}.
+\]
+
+In our current hierarchical script, this is represented explicitly with a fiducial distance-redshift grid. For fixed \(\Omega_m\) and \(w_0\),
+
+\[
+d_L(z;H_0)
+=
+\frac{H_{0,\rm fid}}{H_0}\,
+d_L(z;H_{0,\rm fid}),
 \]
 
 and
+
+\[
+\frac{dz}{dd_L}(z;H_0)
+=
+\frac{H_0}{H_{0,\rm fid}}
+\left[
+\frac{d d_L(z;H_{0,\rm fid})}{dz}
+\right]^{-1}.
+\]
+
+The derivative \(d d_L(z;H_{0,\rm fid})/dz\) is precomputed on a grid and evaluated by interpolation. This avoids relying on a cosmology object that may not accept a vector of event-level \(H_0\) samples inside the JAX/gwpopulation recycling path.
+
+The mass-frame part is
 
 \[
 \frac{\partial(m_1^{\rm src},m_2^{\rm src})}{\partial(m_1^{\rm det},m_2^{\rm det})} = \frac{1}{(1+z)^2}.
@@ -512,7 +559,7 @@ This is much safer than trying to analytically reconstruct the full PE prior at 
 
 ### 11.1 Mass model
 
-At the moment the hierarchical source-frame mass spectrum is modeled as an ordered truncated Gaussian,
+At the moment the hierarchical source-frame mass spectrum is modeled as an ordered Gaussian evaluated inside the source-frame analysis support,
 
 \[
 \pi_m(m_1^{\rm src},m_2^{\rm src}\mid \mu_m,\sigma_m)
@@ -521,7 +568,7 @@ At the moment the hierarchical source-frame mass spectrum is modeled as an order
 \,\Theta(m_1^{\rm src}-m_2^{\rm src}),
 \]
 
-with support restricted to a chosen source-frame mass interval.
+with support restricted to the PE source-frame mass constraint interval used for recycling.
 
 ### 11.2 Redshift model
 
@@ -539,9 +586,9 @@ In the current script, because \(\Omega_m\) and \(w_0\) are fixed and the normal
 
 ### 11.3 Hyper-distributions for \(H_0\) and \(\delta a_k\)
 
-The current `hier_eosfit_hyperdist_gpu.py` models
+The current `hier_eosfit_hyper.py` models
 
-- \(H_{0,i}\) with a truncated Gaussian hyper-distribution,
+- \(H_{0,i}\) with a Gaussian hyper-distribution,
 - each \(\delta a_{k,i}\) with a Gaussian hyper-distribution.
 
 This is the direct implementation of the recycling-compatible surrogate described above.
@@ -651,7 +698,7 @@ The following are approximations or modeling choices:
    - We keep \(\Omega_m\) and \(w_0\) fixed in the current implementation.
 
 4. **Current population model choice**
-   - We currently use an ordered truncated Gaussian in source-frame masses.
+   - We currently use an ordered Gaussian in source-frame masses, evaluated inside the PE source-frame mass support.
    - This is a modeling choice, not a theorem.
 
 ---
@@ -691,13 +738,13 @@ This script:
 - saves augmented posterior CSVs,
 - reweights from RB likelihood to full likelihood.
 
-Important implementation detail:
+Current implementation note:
 
-- The temporary monkey-patch of `likelihood.log_likelihood_ratio` with an instance-bound `safe_log_likelihood_ratio` can break multiprocessing pickling. The robust fix is to implement a proper subclass instead of monkey-patching the instance method.
+- The current PE script uses bilby’s standard relative-binning likelihood class directly (no instance monkey-patch and no custom safe wrapper).
 
 ### 16.2 Hierarchical script
 
-Current preferred script: `hier_eosfit_hyperdist_gpu.py`
+Current preferred script: `hier_eosfit_hyper.py`
 
 This script:
 
@@ -790,7 +837,7 @@ When running the current pipeline, verify all of the following.
 
 ### Interpretation
 
-- Remember that `hier_eosfit_hyperdist_gpu.py` is the preferred current script.
+- Remember that `hier_eosfit_hyper.py` is the preferred current script.
 - Remember that it implements the recycling-compatible hyper-distribution surrogate, not the exact shared-constant model.
 
 ---

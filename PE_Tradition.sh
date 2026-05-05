@@ -71,8 +71,9 @@ LABEL="bns_${EVENT_NAME}_traditional_Mc0.1"
 # ======================
 RW_NPOOL=4
 RW_N_CHECKPOINT=2000
-RW_METHOD="weighted"          # options: weighted, rejection, systematic
+RW_METHOD="weighted"          # options: weighted
 RW_USE_NESTED_SAMPLES=0       # 1 -> pass --rw-use-nested-samples
+SKY_FRAME="detector"          # options: detector, sky
 RESUME_DIR="${TMPDIR:-${OUTDIR}}"
 mkdir -p "${RESUME_DIR}"
 RW_RESUME_FILE="${RESUME_DIR}/${LABEL}_reweighted_weights_resume.npz"
@@ -100,6 +101,7 @@ echo "RW_NPOOL=${RW_NPOOL}"
 echo "RW_N_CHECKPOINT=${RW_N_CHECKPOINT}"
 echo "RW_METHOD=${RW_METHOD}"
 echo "RW_USE_NESTED_SAMPLES=${RW_USE_NESTED_SAMPLES}"
+echo "SKY_FRAME=${SKY_FRAME}"
 echo "RW_RESUME_FILE=${RW_RESUME_FILE}"
 echo "================================================="
 
@@ -123,6 +125,7 @@ ARGS=(
   --rw-checkpoint "${RW_N_CHECKPOINT}"
   --rw-resume-file "${RW_RESUME_FILE}"
   --rw-method "${RW_METHOD}"
+  --sky-frame "${SKY_FRAME}"
 )
 
 if [ "${ZERO_NOISE}" = "1" ]; then

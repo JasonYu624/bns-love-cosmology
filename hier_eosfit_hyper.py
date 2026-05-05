@@ -6,19 +6,22 @@ import os
 import bilby as bb
 import gwpopulation as gwpop
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
+from astropy.cosmology import FlatwCDM, Planck18
 from bilby.core.prior import Gaussian, PriorDict, Uniform
 from gwpopulation.experimental.jax import JittedLikelihood
-from jax.scipy.special import erf
-from wcosmo import wcosmo as wc
-from wcosmo.astropy import Planck18
-from wcosmo.utils import disable_units
+from jax.scipy.stats import norm as jax_norm
 
 jax.config.update("jax_enable_x64", True)
 
-disable_units()
+REQUIRE_GPU = os.environ.get("REQUIRE_GPU", "0") == "1"
+JAX_BACKEND = jax.default_backend()
+JAX_DEVICES = jax.devices()
+print(f"[jax] backend={JAX_BACKEND}, devices={JAX_DEVICES}", flush=True)
+if REQUIRE_GPU and JAX_BACKEND != "gpu":
+    raise RuntimeError(f"REQUIRE_GPU=1 but JAX backend is '{JAX_BACKEND}'")
+
 gwpop.set_backend("jax")
 xp = gwpop.utils.xp
 
@@ -46,13 +49,15 @@ LABEL = os.environ.get("LABEL", "hier_eosfit_hyperdist_gpu")
 OM0 = float(os.environ.get("OM0", str(float(Planck18.Om0))))
 W0 = float(os.environ.get("W0", "-1.0"))
 H0_POP = float(os.environ.get("H0_POP", str(float(Planck18.H0.value))))
+H0_FID = float(os.environ.get("H0_FID", "70.0"))
 Z_MAX = float(os.environ.get("Z_MAX", "0.3"))
 GAMMA = float(os.environ.get("GAMMA", "0.0"))
 Z_GRID_SIZE = int(os.environ.get("Z_GRID_SIZE", "4096"))
 
-# Population mass model in source frame
-M_POP_MIN = float(os.environ.get("M_POP_MIN", "1.1"))
-M_POP_MAX = float(os.environ.get("M_POP_MAX", "2.25"))
+# Population mass model in source frame. Match the PE source-frame mass
+# constraints so the recycling target stays inside the sampled PE support.
+M_POP_MIN = float(os.environ.get("M_POP_MIN", "0.8"))
+M_POP_MAX = float(os.environ.get("M_POP_MAX", "1.8"))
 SIG_M_MIN = float(os.environ.get("SIG_M_MIN", "0.01"))
 SIG_M_MAX = float(os.environ.get("SIG_M_MAX", "0.5"))
 
@@ -67,10 +72,10 @@ DELTA_MU_SIGMA = float(os.environ.get("DELTA_MU_SIGMA", "2.0"))
 SIG_DA_MIN = float(os.environ.get("SIG_DA_MIN", "0.01"))
 SIG_DA_MAX = float(os.environ.get("SIG_DA_MAX", "2.0"))
 
-# Selection proposal used in population_selection_bias_eosfit.py
+# Selection proposal used in population_selection_bias_eosfit.py.
 SEL_MASS_DIST = os.environ.get("SEL_MASS_DIST", "flat").lower()
-M_SEL_MIN = float(os.environ.get("M_SEL_MIN", "1.0"))
-M_SEL_MAX = float(os.environ.get("M_SEL_MAX", "1.7"))
+M_SEL_MIN = float(os.environ.get("M_SEL_MIN", "0.8"))
+M_SEL_MAX = float(os.environ.get("M_SEL_MAX", "1.8"))
 M_SEL_MU = float(os.environ.get("M_SEL_MU", "1.33"))
 M_SEL_SIGMA = float(os.environ.get("M_SEL_SIGMA", "0.09"))
 SEL_Z_MAX = float(os.environ.get("SEL_Z_MAX", str(Z_MAX)))
@@ -89,122 +94,63 @@ os.makedirs(OUTDIR, exist_ok=True)
 bb.core.utils.setup_logger(outdir=OUTDIR, label=LABEL)
 
 # =========================================================
-# Helper PDFs
+# Population factors
 # =========================================================
-SQRT_2PI = float(np.sqrt(2.0 * np.pi))
+def make_redshift_grid(zmax, gamma):
+    z_grid = np.linspace(0.0, zmax, Z_GRID_SIZE)
+    cosmo = FlatwCDM(H0=H0_FID, Om0=OM0, w0=W0, Tcmb0=Planck18.Tcmb0)
+    dvc_dz = 4.0 * np.pi * cosmo.differential_comoving_volume(z_grid).value
+    pz = dvc_dz * (1.0 + z_grid) ** (gamma - 1.0)
+    pz /= np.trapezoid(pz, z_grid)
+    dL = cosmo.luminosity_distance(z_grid).value
+    dDLdz = np.gradient(dL, z_grid, edge_order=2)
+    return xp.asarray(z_grid), xp.asarray(pz), xp.asarray(dDLdz)
 
 
-def gaussian_np(x, mu, sigma):
-    sigma = max(float(sigma), 1e-12)
-    x = np.asarray(x, dtype=float)
-    return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * SQRT_2PI)
+Z_GRID, PZ_GRID, DDL_DZ_FID_GRID = make_redshift_grid(Z_MAX, GAMMA)
+SEL_Z_GRID, SEL_PZ_GRID, _ = make_redshift_grid(SEL_Z_MAX, SEL_GAMMA)
 
 
-def trunc_gaussian_np(x, mu, sigma, xmin, xmax):
-    sigma = max(float(sigma), 1e-12)
-    x = np.asarray(x, dtype=float)
-    a = (xmin - mu) / (sigma * np.sqrt(2.0))
-    b = (xmax - mu) / (sigma * np.sqrt(2.0))
-    z = 0.5 * (math_erf(b) - math_erf(a))
-    z = max(float(z), 1e-300)
-    p = gaussian_np(x, mu, sigma) / z
-    return np.where((x >= xmin) & (x <= xmax), p, 0.0)
+def redshift_pdf(dataset):
+    z = xp.asarray(dataset["redshift"])
+    return xp.interp(z, Z_GRID, PZ_GRID, left=0.0, right=0.0)
 
 
-def ordered_uniform_mass_pdf_np(m1, m2, mmin, mmax):
-    m1 = np.asarray(m1, dtype=float)
-    m2 = np.asarray(m2, dtype=float)
+def selection_redshift_pdf(z):
+    return xp.interp(xp.asarray(z), SEL_Z_GRID, SEL_PZ_GRID, left=0.0, right=0.0)
+
+
+def ordered_uniform_mass_pdf(m1, m2, mmin, mmax):
+    m1 = xp.asarray(m1)
+    m2 = xp.asarray(m2)
     dm = float(mmax - mmin)
     ok = (m1 >= m2) & (m2 >= mmin) & (m1 <= mmax)
-    return np.where(ok, 2.0 / (dm * dm), 0.0)
+    return xp.where(ok, 2.0 / (dm * dm), 0.0)
 
 
-def ordered_trunc_gaussian_mass_pdf_np(m1, m2, mu, sigma, mmin, mmax):
-    p1 = trunc_gaussian_np(m1, mu, sigma, mmin, mmax)
-    p2 = trunc_gaussian_np(m2, mu, sigma, mmin, mmax)
-    return np.where(np.asarray(m1) >= np.asarray(m2), 2.0 * p1 * p2, 0.0)
-
-
-def math_erf(x):
-    from math import erf as _erf
-
-    if np.isscalar(x):
-        return _erf(x)
-    return np.vectorize(_erf)(x)
-
-
-def trunc_gaussian_jax(x, mu, sigma, xmin, xmax):
-    x = xp.asarray(x)
-    mu = xp.asarray(mu)
+def gaussian_pdf(x, mu, sigma):
     sigma = xp.maximum(xp.asarray(sigma), 1e-12)
-    xmin = xp.asarray(xmin)
-    xmax = xp.asarray(xmax)
-    p = xp.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * xp.sqrt(2.0 * xp.pi))
-    a = (xmin - mu) / (sigma * xp.sqrt(2.0))
-    b = (xmax - mu) / (sigma * xp.sqrt(2.0))
-    z = 0.5 * (erf(b) - erf(a))
-    z = xp.maximum(z, 1e-300)
-    p = p / z
-    return xp.where((x >= xmin) & (x <= xmax), p, 0.0)
+    return jax_norm.pdf(xp.asarray(x), loc=xp.asarray(mu), scale=sigma)
 
 
-def gaussian_jax(x, mu, sigma):
-    x = xp.asarray(x)
-    mu = xp.asarray(mu)
-    sigma = xp.maximum(xp.asarray(sigma), 1e-12)
-    return xp.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * xp.sqrt(2.0 * xp.pi))
+def ordered_gaussian_mass_pdf(m1, m2, mu, sigma, mmin, mmax):
+    m1 = xp.asarray(m1)
+    m2 = xp.asarray(m2)
+    p1 = gaussian_pdf(m1, mu, sigma)
+    p2 = gaussian_pdf(m2, mu, sigma)
+    ok = (m1 >= m2) & (m2 >= mmin) & (m1 <= mmax)
+    return xp.where(ok, 2.0 * p1 * p2, 0.0)
 
 
-def ordered_trunc_gaussian_mass_pdf_jax(m1, m2, mu, sigma, mmin, mmax):
-    p1 = trunc_gaussian_jax(m1, mu, sigma, mmin, mmax)
-    p2 = trunc_gaussian_jax(m2, mu, sigma, mmin, mmax)
-    return xp.where(xp.asarray(m1) >= xp.asarray(m2), 2.0 * p1 * p2, 0.0)
+def detector_mass_jacobian_from_chirp_q(chirp_mass, mass_ratio):
+    chirp_mass = xp.asarray(chirp_mass)
+    q = xp.asarray(mass_ratio)
+    return chirp_mass * (1.0 + q) ** (2.0 / 5.0) * q ** (-6.0 / 5.0)
 
 
-# =========================================================
-# Normalized p(z) used by population and VT
-# =========================================================
-# With fixed Om0 and w0, varying H0 only changes dVc/dz by an overall H0^-3,
-# which cancels after normalization. So the normalized redshift PDF can be
-# precomputed at any convenient fiducial H0.
-_z_grid = xp.linspace(0.0, Z_MAX, Z_GRID_SIZE)
-_pz_unnorm_grid = (
-    4.0
-    * xp.pi
-    * wc.differential_comoving_volume(_z_grid, H0=H0_POP, Om0=OM0, w0=W0)
-    * (1.0 + _z_grid) ** (GAMMA - 1.0)
-)
-_pz_norm = xp.trapezoid(_pz_unnorm_grid, _z_grid)
-
-
-def redshift_pdf_jax(z):
-    z = xp.asarray(z)
-    p = (
-        4.0
-        * xp.pi
-        * wc.differential_comoving_volume(z, H0=H0_POP, Om0=OM0, w0=W0)
-        * (1.0 + z) ** (GAMMA - 1.0)
-    ) / xp.maximum(_pz_norm, 1e-300)
-    return xp.where((z >= 0.0) & (z <= Z_MAX), p, 0.0)
-
-
-def redshift_pdf_np(z, zmax, gamma, h0, om0, w0):
-    z = np.asarray(z, dtype=float)
-    z_grid = np.linspace(0.0, zmax, 6000)
-    p_grid = (
-        4.0
-        * np.pi
-        * np.asarray(wc.differential_comoving_volume(z_grid, H0=h0, Om0=om0, w0=w0), dtype=float)
-        * (1.0 + z_grid) ** (gamma - 1.0)
-    )
-    norm = float(np.trapezoid(p_grid, z_grid))
-    p = (
-        4.0
-        * np.pi
-        * np.asarray(wc.differential_comoving_volume(z, H0=h0, Om0=om0, w0=w0), dtype=float)
-        * (1.0 + z) ** (gamma - 1.0)
-    ) / max(norm, 1e-300)
-    return np.where((z >= 0.0) & (z <= zmax), p, 0.0)
+def dz_ddL_from_z_H0(z, H0):
+    dDLdz_fid = xp.interp(xp.asarray(z), Z_GRID, DDL_DZ_FID_GRID)
+    return (xp.asarray(H0) / H0_FID) / dDLdz_fid
 
 
 # =========================================================
@@ -228,18 +174,19 @@ def event_model_density(
     m2s = dataset["mass_2_source"]
     h0_obs = dataset["H0_sample"]
 
-    p_h0 = trunc_gaussian_jax(h0_obs, mu_H, sig_H, H0_MIN, H0_MAX)
-    p_a0 = gaussian_jax(dataset["delta_a0"], mu_a0, sig_a0)
-    p_a1 = gaussian_jax(dataset["delta_a1"], mu_a1, sig_a1)
-    p_a2 = gaussian_jax(dataset["delta_a2"], mu_a2, sig_a2)
+    p_h0 = gaussian_pdf(h0_obs, mu_H, sig_H)
+    p_a0 = gaussian_pdf(dataset["delta_a0"], mu_a0, sig_a0)
+    p_a1 = gaussian_pdf(dataset["delta_a1"], mu_a1, sig_a1)
+    p_a2 = gaussian_pdf(dataset["delta_a2"], mu_a2, sig_a2)
 
-    p_m = ordered_trunc_gaussian_mass_pdf_jax(m1s, m2s, mu_m, sig_m, M_POP_MIN, M_POP_MAX)
-    p_z = redshift_pdf_jax(z)
+    p_m = ordered_gaussian_mass_pdf(m1s, m2s, mu_m, sig_m, M_POP_MIN, M_POP_MAX)
+    p_z = redshift_pdf(dict(redshift=z))
 
-    dz_ddL = 1.0 / wc.dDLdz(z, H0=h0_obs, Om0=OM0, w0=W0)
+    dz_ddL = dz_ddL_from_z_H0(z, h0_obs)
     jac_mass = 1.0 / (1.0 + z) ** 2
+    jac_chirp_q = detector_mass_jacobian_from_chirp_q(dataset["chirp_mass"], dataset["mass_ratio"])
 
-    out = p_h0 * p_a0 * p_a1 * p_a2 * p_m * p_z * dz_ddL * jac_mass
+    out = p_h0 * p_a0 * p_a1 * p_a2 * p_m * p_z * dz_ddL * jac_mass * jac_chirp_q
     return xp.maximum(out, 1e-300)
 
 
@@ -251,8 +198,8 @@ def vt_model_density(dataset, mu_H, sig_H, mu_a0, sig_a0, mu_a1, sig_a1, mu_a2, 
     m1s = dataset["mass_1_source"]
     m2s = dataset["mass_2_source"]
     z = dataset["redshift"]
-    p_m = ordered_trunc_gaussian_mass_pdf_jax(m1s, m2s, mu_m, sig_m, M_POP_MIN, M_POP_MAX)
-    p_z = redshift_pdf_jax(z)
+    p_m = ordered_gaussian_mass_pdf(m1s, m2s, mu_m, sig_m, M_POP_MIN, M_POP_MAX)
+    p_z = redshift_pdf(dict(redshift=z))
     return xp.maximum(p_m * p_z, 1e-300)
 
 
@@ -270,6 +217,8 @@ def load_event_posteriors():
 
     required = [
         "luminosity_distance",
+        "chirp_mass",
+        "mass_ratio",
         "H0_sample",
         "delta_a0",
         "delta_a1",
@@ -292,6 +241,8 @@ def load_event_posteriors():
 
         keep = [
             "luminosity_distance",
+            "chirp_mass",
+            "mass_ratio",
             "H0_sample",
             "delta_a0",
             "delta_a1",
@@ -316,9 +267,12 @@ def load_event_posteriors():
 
 def selection_mass_pdf_np(m1, m2):
     if SEL_MASS_DIST == "flat":
-        return ordered_uniform_mass_pdf_np(m1, m2, M_SEL_MIN, M_SEL_MAX)
-    if SEL_MASS_DIST in {"gaussian", "trunc_gaussian", "truncated_gaussian"}:
-        return ordered_trunc_gaussian_mass_pdf_np(m1, m2, M_SEL_MU, M_SEL_SIGMA, M_SEL_MIN, M_SEL_MAX)
+        return np.asarray(ordered_uniform_mass_pdf(m1, m2, M_SEL_MIN, M_SEL_MAX), dtype=float)
+    if SEL_MASS_DIST == "gaussian":
+        return np.asarray(
+            ordered_gaussian_mass_pdf(m1, m2, M_SEL_MU, M_SEL_SIGMA, M_SEL_MIN, M_SEL_MAX),
+            dtype=float,
+        )
     raise ValueError(f"Unknown SEL_MASS_DIST={SEL_MASS_DIST}")
 
 
@@ -336,7 +290,7 @@ def load_selection_injections():
     if np.any(swap):
         m1s[swap], m2s[swap] = m2s[swap], m1s[swap]
 
-    pz = redshift_pdf_np(z, SEL_Z_MAX, SEL_GAMMA, SEL_H0, OM0, W0)
+    pz = np.asarray(selection_redshift_pdf(z), dtype=float)
     pm = selection_mass_pdf_np(m1s, m2s)
     prior = np.maximum(pz * pm, 1e-300)
 
