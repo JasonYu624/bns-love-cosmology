@@ -25,14 +25,20 @@ for _k in [
     os.environ.setdefault(_k, "1")
 
 
+class UniformReflected(bilby.core.prior.analytical.Uniform):
+    def rescale(self, val):
+        u = 2 * np.minimum(val, 1 - val)
+        return super().rescale(u)
+
+
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pop-outdir", default="outdir_population_exactfd")
     parser.add_argument("--event-index", type=int, default=1)
-    parser.add_argument("--outdir", default="outdir_population_run_test")
+    parser.add_argument("--outdir", default="outdir_population_run_followup")
     parser.add_argument("--label")
     parser.add_argument("--zero-noise", action="store_true")
-    parser.add_argument("--widen-mc", type=float, default=0.1)
+    parser.add_argument("--widen-mc", type=float, default=0.0002)
     parser.add_argument("--nlive", type=int, default=1000)
     parser.add_argument("--delta-sigma", type=float, default=1.0)
     parser.add_argument("--npool", type=int, default=1)
@@ -42,6 +48,10 @@ def get_args():
         default="detector",
         help="Sky parameterization: detector uses zenith/azimuth, sky uses ra/dec.",
     )
+    parser.add_argument("--sampler-seed", type=int, default=None,
+                        help="Seed for dynesty sampler. Default=None means bilby auto-seeds.")
+    parser.add_argument("--fix-spins", action="store_true",
+                        help="Fix chi_1=chi_2=0 with DeltaFunction prior (reduces dims).")
     parser.add_argument("--rw-npool", type=int, default=4)
     parser.add_argument("--rw-resume-file")
     parser.add_argument("--rw-checkpoint", type=int, default=2000)
@@ -95,20 +105,9 @@ if not os.path.exists(SIGNAL_PATH):
 duration = int(seg["duration"])
 start_time = float(seg["start_time"])
 sampling_frequency = float(seg["sampling_frequency"])
-catalog_config_path = os.path.join(POP_OUTDIR, "catalog_config.json")
-if not os.path.exists(catalog_config_path):
-    raise FileNotFoundError(f"Cannot find {catalog_config_path}")
-with open(catalog_config_path, "r", encoding="utf-8") as f:
-    catalog_config = json.load(f)
-
-required_cfg_keys = ["fmin", "ifo_files", "waveform_arguments"]
-missing_cfg = [k for k in required_cfg_keys if k not in catalog_config]
-if missing_cfg:
-    raise KeyError(f"{catalog_config_path} missing required keys: {missing_cfg}")
-
-fmin = float(catalog_config["fmin"])
-ifo_files = list(catalog_config["ifo_files"])
-waveform_arguments_full = dict(catalog_config["waveform_arguments"])
+fmin = float(seg["fmin"])
+ifo_files = list(meta["reproduction"]["ifo_files"])
+waveform_arguments_full = dict(meta["reproduction"]["waveform_arguments"])
 waveform_arguments_full.pop("frequency_bin_edges", None)
 waveform_arguments_full.pop("fiducial", None)
 waveform_arguments_rb = dict(waveform_arguments_full)
@@ -128,6 +127,10 @@ NLIVE = args.nlive
 DELTA_SIGMA = args.delta_sigma
 NPOOL = args.npool
 SKY_FRAME = args.sky_frame
+
+SAMPLER_SEED = args.sampler_seed
+
+FIX_SPINS = args.fix_spins
 
 H0_TRUE = float(Planck18.H0.value)
 RUN_REWEIGHT = not args.skip_reweight
@@ -337,28 +340,16 @@ def make_priors():
 
     p["luminosity_distance"] = bilby.core.prior.PowerLaw(alpha=2.0, minimum=10.0, maximum=2500.0, name="luminosity_distance", latex_label="$d_L$", unit="Mpc")
 
-    p["chi_1"] = bilby.gw.prior.AlignedSpin(
-        name="chi_1",
-        a_prior=bilby.core.prior.Uniform(minimum=0.0, maximum=0.05),
-    )
-    p["chi_2"] = bilby.gw.prior.AlignedSpin(
-        name="chi_2",
-        a_prior=bilby.core.prior.Uniform(minimum=0.0, maximum=0.05),
-    )
+    if FIX_SPINS:
+        p["chi_1"] = bilby.core.prior.DeltaFunction(peak=0.0, name="chi_1", latex_label="$\\chi_1$")
+        p["chi_2"] = bilby.core.prior.DeltaFunction(peak=0.0, name="chi_2", latex_label="$\\chi_2$")
+    else:
+        p["chi_1"] = bilby.core.prior.Uniform(minimum=-0.05, maximum=0.05, name="chi_1", latex_label="$\\chi_1$")
+        p["chi_2"] = bilby.core.prior.Uniform(minimum=-0.05, maximum=0.05, name="chi_2", latex_label="$\\chi_2$")
 
-    p["chirp_mass"] = bilby.gw.prior.UniformInComponentsChirpMass(
-        minimum=Mc_inj - WIDEN_MC,
-        maximum=Mc_inj + WIDEN_MC,
-        name="chirp_mass",
-        latex_label="$\\mathcal{M}$",
-    )
+    p["chirp_mass"] = bilby.core.prior.Uniform(minimum=Mc_inj - WIDEN_MC, maximum=Mc_inj + WIDEN_MC, name="chirp_mass", latex_label="$\\mathcal{M}$")
 
-    p["mass_ratio"] = bilby.gw.prior.UniformInComponentsMassRatio(
-        minimum=0.5,
-        maximum=1.0,
-        name="mass_ratio",
-        latex_label="$q$",
-    )
+    p["mass_ratio"] = UniformReflected(minimum=0.5, maximum=1.0, name="mass_ratio", latex_label="$q$")
 
     p["geocent_time"] = bilby.core.prior.Uniform(minimum=inj["geocent_time"] - 0.05, maximum=inj["geocent_time"] + 0.05, name="geocent_time")
     p["H0_sample"] = bilby.core.prior.Uniform(minimum=10, maximum=150, name="H0_sample", latex_label="$H_0$")
@@ -464,7 +455,7 @@ likelihood = bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransi
     reference_frame=REFERENCE_FRAME,
     time_reference="geocenter",
     distance_marginalization=False,
-    phase_marginalization=False,
+    phase_marginalization=True,
     time_marginalization=False,
     priors=priors,
     chi=20.0,
@@ -478,7 +469,8 @@ likelihood = bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransi
 print(f"=== Starting Dynesty Run for {EVENT_NAME} ===")
 print(
     f"ZERO_NOISE={ZERO_NOISE}, WIDEN_MC={WIDEN_MC}, "
-    f"DELTA_SIGMA={DELTA_SIGMA}, H0_TRUE={H0_TRUE}, SKY_FRAME={SKY_FRAME}",
+    f"DELTA_SIGMA={DELTA_SIGMA}, H0_TRUE={H0_TRUE}, SKY_FRAME={SKY_FRAME}, "
+    f"SAMPLER_SEED={SAMPLER_SEED}, FIX_SPINS={FIX_SPINS}",
     flush=True,
 )
 
@@ -486,6 +478,7 @@ result = bilby.run_sampler(
     likelihood=likelihood,
     priors=priors,
     sampler="dynesty",
+    seed=SAMPLER_SEED,
     nlive=NLIVE,
     naccept=60,
     check_point_plot=True,
@@ -514,65 +507,6 @@ def ensure_dataframe(x):
     return pd.DataFrame(x)
 
 
-def add_hyper_input_columns(df):
-    df = df.copy()
-
-    required = [
-        "H0_sample",
-        "mass_1",
-        "mass_2",
-        "luminosity_distance",
-        "mass_1_source",
-        "mass_2_source",
-        "lambda_1",
-        "lambda_2",
-        "delta_a0",
-        "delta_a1",
-        "delta_a2",
-    ]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise KeyError(f"Cannot build hyper-PE input columns; missing columns: {missing}")
-
-    df["H0"] = df["H0_sample"]
-    df["mass_1_detector"] = df["mass_1"]
-    df["mass_2_detector"] = df["mass_2"]
-
-    support = (
-        (df["mass_1_source"] >= 0.8)
-        & (df["mass_1_source"] <= 1.8)
-        & (df["mass_2_source"] >= 0.8)
-        & (df["mass_2_source"] <= 1.8)
-        & (df["lambda_1"] >= 10.0)
-        & (df["lambda_1"] <= 1.0e4)
-        & (df["lambda_2"] >= 10.0)
-        & (df["lambda_2"] <= 1.0e4)
-    )
-
-    delta_shape = (
-        np.exp(-0.5 * (df["delta_a0"] / DELTA_SIGMA) ** 2)
-        * np.exp(-0.5 * (df["delta_a1"] / DELTA_SIGMA) ** 2)
-        * np.exp(-0.5 * (df["delta_a2"] / DELTA_SIGMA) ** 2)
-    )
-
-    df["prior"] = (
-        df["luminosity_distance"] ** 2
-        * delta_shape
-        * support.astype(float)
-    )
-
-    if not np.all(np.isfinite(df["prior"])):
-        raise ValueError("Non-finite values found in hyper-PE recycling prior column.")
-    if np.any(df["prior"] <= 0):
-        n_bad = int(np.sum(df["prior"] <= 0))
-        raise ValueError(
-            f"{n_bad} posterior samples have zero/negative hyper-PE recycling prior. "
-            "This means they violate the PE support or have invalid prior density."
-        )
-
-    return df
-
-
 result.save_to_file(overwrite=True, extension=RESULT_EXTENSION, outdir=outdir)
 print(
     f"Saved Result with nested samples to: "
@@ -583,7 +517,6 @@ print(
 
 def save_corner_and_csv(res, out_label, include_redshift=True):
     post_df = ensure_dataframe(res.posterior)
-    post_df = add_hyper_input_columns(post_df)
     post_csv = os.path.join(outdir, f"{out_label}_posterior_augmented.csv")
     post_df.to_csv(post_csv, index=False)
 
@@ -595,13 +528,9 @@ def save_corner_and_csv(res, out_label, include_redshift=True):
         "luminosity_distance",
         "redshift_sample",
         "H0_sample",
-        "H0",
         "delta_a0",
         "delta_a1",
         "delta_a2",
-        "mass_1_detector",
-        "mass_2_detector",
-        "prior",
         "theta_jn",
         "psi",
         "chi_1",
@@ -627,22 +556,18 @@ def save_corner_and_csv(res, out_label, include_redshift=True):
         "luminosity_distance": r"$d_L$",
         "redshift_sample": r"$z$",
         "H0_sample": r"$H_0$",
-        "H0": r"$H_0$",
         "delta_a0": r"$\\delta a_0$",
         "delta_a1": r"$\\delta a_1$",
         "delta_a2": r"$\\delta a_2$",
         "theta_jn": r"$\\theta_{JN}$",
         "psi": r"$\\psi$",
-        "chi_1": r"$\\chi_{1z}$",
-        "chi_2": r"$\\chi_{2z}$",
+        "chi_1": r"$\\chi_1$",
+        "chi_2": r"$\\chi_2$",
         "zenith": r"$\\kappa$",
         "azimuth": r"$\\mathrm{azimuth}$",
         "ra": r"$\\alpha$",
         "dec": r"$\\delta$",
         "geocent_time": r"$t_c$",
-        "mass_1_detector": r"$m_1^{\\rm det}$",
-        "mass_2_detector": r"$m_2^{\\rm det}$",
-        "prior": r"$\\pi_{\\rm PE}^{\\rm recycle}$",
         "lambda_tilde": r"$\\tilde{\\Lambda}$",
         "delta_lambda_tilde": r"$\\delta\\tilde{\\Lambda}$",
         "mass_1": r"$m_1$",

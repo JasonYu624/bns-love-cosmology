@@ -26,6 +26,9 @@ venv/
 # outdir* directories (PE/hier/results)
 outdir*/
 outdir_*/
+event9*/
+rb_*/
+hyperpe_*/
 
 # resume/checkpoint files and binary results
 *_resume.*
@@ -56,3 +59,5 @@ cosmic_explorer_*.txt
 # then commit the removal. Adjust patterns above as needed for your workflow.
 
 mixed_background_3g_relbin.py
+*.tex
+rb_*.ipynb

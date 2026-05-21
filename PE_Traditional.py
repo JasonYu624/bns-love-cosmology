@@ -24,12 +24,6 @@ for _k in [
     os.environ.setdefault(_k, "1")
 
 
-class UniformReflected(bilby.core.prior.analytical.Uniform):
-    def rescale(self, val):
-        u = 2 * np.minimum(val, 1 - val)
-        return super().rescale(u)
-
-
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pop-outdir", default="outdir_population_exactfd")
@@ -47,11 +41,6 @@ def get_args():
         default="detector",
         help="Sky parameterization: detector uses zenith/azimuth, sky uses ra/dec.",
     )
-    parser.add_argument("--lambda-tilde-min", type=float, default=10.0)
-    parser.add_argument("--lambda-tilde-max", type=float, default=8000.0)
-    parser.add_argument("--delta-lambda-tilde-max", type=float, default=8000.0)
-    parser.add_argument("--fix-tidal", action="store_true")
-    parser.add_argument("--update-fiducial", action="store_true")
     parser.add_argument("--rw-npool", type=int, default=4)
     parser.add_argument("--rw-resume-file")
     parser.add_argument("--rw-checkpoint", type=int, default=2000)
@@ -90,13 +79,26 @@ if exact_info is None:
     raise ValueError("meta.json does not contain exact_signal_file")
 
 SIGNAL_PATH = os.path.join(POP_OUTDIR, EVENT_NAME, exact_info["filename"])
+if not os.path.exists(SIGNAL_PATH):
+    raise FileNotFoundError(f"Cannot find exact signal file: {SIGNAL_PATH}")
+
 duration = int(seg["duration"])
 start_time = float(seg["start_time"])
 sampling_frequency = float(seg["sampling_frequency"])
-fmin = float(seg["fmin"])
-ifo_files = list(meta["reproduction"]["ifo_files"])
+catalog_config_path = os.path.join(POP_OUTDIR, "catalog_config.json")
+if not os.path.exists(catalog_config_path):
+    raise FileNotFoundError(f"Cannot find {catalog_config_path}")
+with open(catalog_config_path, "r", encoding="utf-8") as f:
+    catalog_config = json.load(f)
 
-waveform_arguments_full = dict(meta["reproduction"]["waveform_arguments"])
+required_cfg_keys = ["fmin", "ifo_files", "waveform_arguments"]
+missing_cfg = [k for k in required_cfg_keys if k not in catalog_config]
+if missing_cfg:
+    raise KeyError(f"{catalog_config_path} missing required keys: {missing_cfg}")
+
+fmin = float(catalog_config["fmin"])
+ifo_files = list(catalog_config["ifo_files"])
+waveform_arguments_full = dict(catalog_config["waveform_arguments"])
 waveform_arguments_full.pop("frequency_bin_edges", None)
 waveform_arguments_full.pop("fiducial", None)
 waveform_arguments_rb = dict(waveform_arguments_full)
@@ -203,6 +205,11 @@ def convert_traditional_bns(parameters, *args, **kwargs):
     return converted
 
 
+def convert_traditional_bns_for_waveform(parameters, *args, **kwargs):
+    converted = convert_traditional_bns(parameters, *args, **kwargs)
+    return converted, []
+
+
 def make_priors():
     p = bilby.core.prior.PriorDict(conversion_function=convert_traditional_bns)
     if SKY_FRAME == "detector":
@@ -230,19 +237,21 @@ def make_priors():
         latex_label="$d_L$",
         unit="Mpc",
     )
-    p["chi_1"] = bilby.core.prior.Uniform(
-        minimum=-0.05, maximum=0.05, name="chi_1", latex_label="$\\chi_1$"
+    p["chi_1"] = bilby.gw.prior.AlignedSpin(
+        name="chi_1",
+        a_prior=bilby.core.prior.Uniform(minimum=0.0, maximum=0.05),
     )
-    p["chi_2"] = bilby.core.prior.Uniform(
-        minimum=-0.05, maximum=0.05, name="chi_2", latex_label="$\\chi_2$"
+    p["chi_2"] = bilby.gw.prior.AlignedSpin(
+        name="chi_2",
+        a_prior=bilby.core.prior.Uniform(minimum=0.0, maximum=0.05),
     )
-    p["chirp_mass"] = bilby.core.prior.Uniform(
+    p["chirp_mass"] = bilby.gw.prior.UniformInComponentsChirpMass(
         minimum=Mc_inj - args.widen_mc,
         maximum=Mc_inj + args.widen_mc,
         name="chirp_mass",
         latex_label="$\\mathcal{M}^{\\rm det}$",
     )
-    p["mass_ratio"] = UniformReflected(
+    p["mass_ratio"] = bilby.gw.prior.UniformInComponentsMassRatio(
         minimum=0.5, maximum=1.0, name="mass_ratio", latex_label="$q$"
     )
     p["geocent_time"] = bilby.core.prior.Uniform(
@@ -251,28 +260,18 @@ def make_priors():
         name="geocent_time",
     )
 
-    if args.fix_tidal:
-        p["lambda_tilde"] = bilby.core.prior.DeltaFunction(
-            peak=lambda_tilde_inj, name="lambda_tilde", latex_label="$\\tilde{\\Lambda}$"
-        )
-        p["delta_lambda_tilde"] = bilby.core.prior.DeltaFunction(
-            peak=delta_lambda_tilde_inj,
-            name="delta_lambda_tilde",
-            latex_label="$\\delta\\tilde{\\Lambda}$",
-        )
-    else:
-        p["lambda_tilde"] = bilby.core.prior.Uniform(
-            minimum=args.lambda_tilde_min,
-            maximum=args.lambda_tilde_max,
-            name="lambda_tilde",
-            latex_label="$\\tilde{\\Lambda}$",
-        )
-        p["delta_lambda_tilde"] = bilby.core.prior.Uniform(
-            minimum=-args.delta_lambda_tilde_max,
-            maximum=args.delta_lambda_tilde_max,
-            name="delta_lambda_tilde",
-            latex_label="$\\delta\\tilde{\\Lambda}$",
-        )
+    p["lambda_tilde"] = bilby.core.prior.Uniform(
+        minimum=10.0,
+        maximum=10000.0,
+        name="lambda_tilde",
+        latex_label="$\\tilde{\\Lambda}$",
+    )
+    p["delta_lambda_tilde"] = bilby.core.prior.Uniform(
+        minimum=-3000.0,
+        maximum=3000.0,
+        name="delta_lambda_tilde",
+        latex_label="$\\delta\\tilde{\\Lambda}$",
+    )
 
     p["lambda_1"] = bilby.core.prior.Constraint(minimum=10, maximum=1e4, name="lambda_1")
     p["lambda_2"] = bilby.core.prior.Constraint(minimum=10, maximum=1e4, name="lambda_2")
@@ -286,14 +285,14 @@ wg_rb = bilby.gw.WaveformGenerator(
     duration=duration,
     sampling_frequency=sampling_frequency,
     frequency_domain_source_model=bilby.gw.source.lal_binary_neutron_star_relative_binning,
-    parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_neutron_star_parameters,
+    parameter_conversion=convert_traditional_bns_for_waveform,
     waveform_arguments=waveform_arguments_rb,
 )
 wg_full = bilby.gw.WaveformGenerator(
     duration=duration,
     sampling_frequency=sampling_frequency,
     frequency_domain_source_model=bilby.gw.source.lal_binary_neutron_star,
-    parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_neutron_star_parameters,
+    parameter_conversion=convert_traditional_bns_for_waveform,
     waveform_arguments=waveform_arguments_full,
 )
 
@@ -350,7 +349,7 @@ likelihood = bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransi
     interferometers=interferometers,
     waveform_generator=wg_rb,
     fiducial_parameters=fiducial_parameters,
-    update_fiducial_parameters=args.update_fiducial,
+    update_fiducial_parameters=False,
     reference_frame=REFERENCE_FRAME,
     time_reference="geocenter",
     distance_marginalization=False,
@@ -364,7 +363,7 @@ likelihood = bilby.gw.likelihood.relative.RelativeBinningGravitationalWaveTransi
 print(f"=== Starting Dynesty Run for {EVENT_NAME} (traditional tides) ===", flush=True)
 print(
     f"ZERO_NOISE={args.zero_noise}, WIDEN_MC={args.widen_mc}, "
-    f"NLIVE={args.nlive}, FIX_TIDAL={args.fix_tidal}, SKY_FRAME={SKY_FRAME}, "
+    f"NLIVE={args.nlive}, SKY_FRAME={SKY_FRAME}, "
     f"lambda_tilde_inj={lambda_tilde_inj:.6g}, "
     f"delta_lambda_tilde_inj={delta_lambda_tilde_inj:.6g}",
     flush=True,
@@ -645,7 +644,7 @@ if RW_USE_NESTED and not rw_use_nested_effective:
         flush=True,
     )
 print(
-    f"ZERO_NOISE={args.zero_noise}, WIDEN_MC={args.widen_mc}, FIX_TIDAL={args.fix_tidal}, "
+    f"ZERO_NOISE={args.zero_noise}, WIDEN_MC={args.widen_mc}, "
     f"SKY_FRAME={SKY_FRAME}, "
     f"RW_METHOD={RW_METHOD}, RW_USE_NESTED={rw_use_nested_effective}",
     flush=True,

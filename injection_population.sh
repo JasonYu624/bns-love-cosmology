@@ -28,7 +28,11 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-export BILBY_SEED=123
+TARGET_N=100
+BASE_SEED=123
+PROGRESS_EVERY=50
+OUTDIR="outdir_population_exactfd"
+LABEL="bns_pop_inj_exactfd"
 
 mkdir -p "${RUNDIR}"
 cd "${RUNDIR}"
@@ -40,4 +44,9 @@ python --version
 which python
 ls -l "${SCRIPT}"
 
-python "${SCRIPT}"
+python "${SCRIPT}" \
+  --outdir "${OUTDIR}" \
+  --label "${LABEL}" \
+  --target-n "${TARGET_N}" \
+  --base-seed "${BASE_SEED}" \
+  --progress-every "${PROGRESS_EVERY}"

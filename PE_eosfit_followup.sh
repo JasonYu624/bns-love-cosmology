@@ -1,35 +1,50 @@
 #!/bin/bash -l
-#SBATCH --job-name=PE_eosfit_rw
+#SBATCH --job-name=PE_eosfit_followup
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=16G
-#SBATCH --time=48:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --hint=nomultithread
 #SBATCH --account=andreasb
-##SBATCH --array=1-10
+## Usage: sbatch PE_eosfit_followup.sh
+##        EVENT_INDEX=5 SAMPLER_SEED=42 sbatch PE_eosfit_followup.sh
 
 set -eo pipefail
 export PS1=${PS1:-"batch"}
 
 RUNDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace"
-SCRIPT="PE_eosfit_reweight.py"
+SCRIPT="PE_eosfit_reweight_followup.py"
 
 POP_OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_exactfd"
 
+# ======================
+# Followup config — edit these
+# ======================
+# Events that broke down in main run (relative binning issues)
+FOLLOWUP_EVENTS=(5)
+
+# Custom seed for dynesty sampler on followup runs.
+# Set to empty string "" to use bilby default (no --sampler-seed passed)
+SAMPLER_SEED=0428
+FIX_SPINS=1  # 1 -> fix chi_1=chi_2=0 with DeltaFunction prior
+
+# ======================
+# Event index resolution
+# ======================
 if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then
     EVENT_INDEX="${SLURM_ARRAY_TASK_ID}"
-else
-    EVENT_INDEX="1"
+elif [ -z "${EVENT_INDEX:-}" ]; then
+    # Default: use first event from FOLLOWUP_EVENTS
+    EVENT_INDEX="${FOLLOWUP_EVENTS[0]}"
 fi
 
 module purge
-module load anaconda3/2025.6
+module load anaconda3/2025.12
 eval "$(conda shell.bash hook)"
 conda activate GW
-# conda activate GW_nodyn
 
 export MPLBACKEND=Agg
 export PYTHONUNBUFFERED=1
@@ -45,7 +60,7 @@ mkdir -p "${RUNDIR}"
 cd "${RUNDIR}"
 
 # ======================
-# Main PE settings
+# PE settings
 # ======================
 ZERO_NOISE=0
 WIDEN_MC=0.0002
@@ -57,18 +72,17 @@ PE_NPOOL="${SLURM_CPUS_PER_TASK:-1}"
 # Labels / output
 # ======================
 EVENT_NAME=$(printf "event_%04d" "${EVENT_INDEX}")
-OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run"
-LABEL="bns_${EVENT_NAME}_eosfit_dyn_phase"
+OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run_followup"
+LABEL="bns_${EVENT_NAME}_eosfit_dyn_followup"
 
 # ======================
 # Reweight settings
-# posterior only
 # ======================
 RW_NPOOL=4
 RW_N_CHECKPOINT=2000
-RW_METHOD="weighted"          # options: weighted
-RW_USE_NESTED_SAMPLES=0       # 1 -> pass --rw-use-nested-samples
-SKY_FRAME="detector"          # options: detector, sky
+RW_METHOD="weighted"
+RW_USE_NESTED_SAMPLES=0
+SKY_FRAME="detector"
 
 RESUME_DIR="${TMPDIR:-${OUTDIR}}"
 mkdir -p "${RESUME_DIR}"
@@ -89,13 +103,14 @@ echo "WIDEN_MC=${WIDEN_MC}"
 echo "NLIVE=${NLIVE}"
 echo "DELTA_SIGMA=${DELTA_SIGMA}"
 echo "PE_NPOOL=${PE_NPOOL}"
+echo "SAMPLER_SEED=${SAMPLER_SEED}"
+echo "FIX_SPINS=${FIX_SPINS}"
 echo "RW_NPOOL=${RW_NPOOL}"
 echo "RW_N_CHECKPOINT=${RW_N_CHECKPOINT}"
 echo "RW_METHOD=${RW_METHOD}"
 echo "RW_USE_NESTED_SAMPLES=${RW_USE_NESTED_SAMPLES}"
 echo "SKY_FRAME=${SKY_FRAME}"
-echo "RW_RESUME_FILE=${RW_RESUME_FILE}"
-echo "TMPDIR=${TMPDIR:-not_set}"
+echo "FOLLOWUP_EVENTS=(${FOLLOWUP_EVENTS[*]})"
 echo "================================================="
 
 python --version
@@ -124,6 +139,15 @@ fi
 
 if [ "${RW_USE_NESTED_SAMPLES}" = "1" ]; then
   ARGS+=(--rw-use-nested-samples)
+fi
+
+# Pass custom seed if set
+if [ -n "${SAMPLER_SEED}" ]; then
+  ARGS+=(--sampler-seed "${SAMPLER_SEED}")
+fi
+
+if [ "${FIX_SPINS}" = "1" ]; then
+  ARGS+=(--fix-spins)
 fi
 
 srun -n 1 --cpus-per-task="${PE_NPOOL}" --cpu-bind=cores \

@@ -9,7 +9,7 @@
 #SBATCH --error=%x-%A_%a.err
 #SBATCH --hint=nomultithread
 #SBATCH --account=andreasb
-##SBATCH --array=1-10
+#SBATCH --array=1,4,9
 
 set -eo pipefail
 export PS1=${PS1:-"batch"}
@@ -46,25 +46,17 @@ cd "${RUNDIR}"
 # Main PE settings
 # ======================
 ZERO_NOISE=0
-FIX_TIDAL=0
-WIDEN_MC=0.1
-NLIVE=200
+WIDEN_MC=0.0002
+NLIVE=1000
 NACCEPT=60
 PE_NPOOL="${SLURM_CPUS_PER_TASK:-1}"
-
-# ======================
-# Traditional tidal prior
-# ======================
-LAMBDA_TILDE_MIN=10
-LAMBDA_TILDE_MAX=10000
-DELTA_LAMBDA_TILDE_MAX=3000
 
 # ======================
 # Labels / output
 # ======================
 EVENT_NAME=$(printf "event_%04d" "${EVENT_INDEX}")
 OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run_traditional"
-LABEL="bns_${EVENT_NAME}_traditional_Mc0.1"
+LABEL="bns_${EVENT_NAME}_traditional"
 
 # ======================
 # Reweight settings
@@ -89,14 +81,10 @@ echo "POP_OUTDIR=${POP_OUTDIR}"
 echo "OUTDIR=${OUTDIR}"
 echo "LABEL=${LABEL}"
 echo "ZERO_NOISE=${ZERO_NOISE}"
-echo "FIX_TIDAL=${FIX_TIDAL}"
 echo "WIDEN_MC=${WIDEN_MC}"
 echo "NLIVE=${NLIVE}"
 echo "NACCEPT=${NACCEPT}"
 echo "PE_NPOOL=${PE_NPOOL}"
-echo "LAMBDA_TILDE_MIN=${LAMBDA_TILDE_MIN}"
-echo "LAMBDA_TILDE_MAX=${LAMBDA_TILDE_MAX}"
-echo "DELTA_LAMBDA_TILDE_MAX=${DELTA_LAMBDA_TILDE_MAX}"
 echo "RW_NPOOL=${RW_NPOOL}"
 echo "RW_N_CHECKPOINT=${RW_N_CHECKPOINT}"
 echo "RW_METHOD=${RW_METHOD}"
@@ -118,9 +106,6 @@ ARGS=(
   --nlive "${NLIVE}"
   --naccept "${NACCEPT}"
   --npool "${PE_NPOOL}"
-  --lambda-tilde-min "${LAMBDA_TILDE_MIN}"
-  --lambda-tilde-max "${LAMBDA_TILDE_MAX}"
-  --delta-lambda-tilde-max "${DELTA_LAMBDA_TILDE_MAX}"
   --rw-npool "${RW_NPOOL}"
   --rw-checkpoint "${RW_N_CHECKPOINT}"
   --rw-resume-file "${RW_RESUME_FILE}"
@@ -130,10 +115,6 @@ ARGS=(
 
 if [ "${ZERO_NOISE}" = "1" ]; then
   ARGS+=(--zero-noise)
-fi
-
-if [ "${FIX_TIDAL}" = "1" ]; then
-  ARGS+=(--fix-tidal)
 fi
 
 if [ "${RW_USE_NESTED_SAMPLES}" = "1" ]; then
