@@ -223,22 +223,23 @@ wg_inj = bilby.gw.WaveformGenerator(
 
 pols = wg_inj.frequency_domain_strain(parameters=inj)
 
-EXACT_DETECTOR_SIGNALS = {}
-for ifo_file in ifo_files:
-    ifo = bilby.gw.detector.load_interferometer(ifo_file)
-    ifo.minimum_frequency = fmin
-    EXACT_DETECTOR_SIGNALS[ifo.name] = np.asarray(ifo.get_detector_response(pols, inj))
-
-# get frequency array from first ifo
-_ifo_test = bilby.gw.detector.InterferometerList([
+# build IFOs matching the original injection script pattern
+ifos_temp = bilby.gw.detector.InterferometerList([
     bilby.gw.detector.load_interferometer(x) for x in ifo_files
 ])
-for _ifo in _ifo_test:
+for _ifo in ifos_temp:
     _ifo.minimum_frequency = fmin
-_ifo_test.set_strain_data_from_zero_noise(
+ifos_temp.set_strain_data_from_zero_noise(
     sampling_frequency=sampling_frequency, duration=duration, start_time=start_time,
 )
-EXACT_FREQUENCY_ARRAY = np.asarray(_ifo_test[0].frequency_array, dtype=np.float64)
+for _ifo in ifos_temp:
+    _ifo.minimum_frequency = fmin
+
+EXACT_FREQUENCY_ARRAY = np.asarray(ifos_temp[0].frequency_array, dtype=np.float64)
+EXACT_DETECTOR_SIGNALS = {
+    ifo.name: np.asarray(ifo.get_detector_response(pols, inj))
+    for ifo in ifos_temp
+}
 
 print(f"  Detectors: {list(EXACT_DETECTOR_SIGNALS.keys())}")
 print(f"  Frequency grid: {len(EXACT_FREQUENCY_ARRAY)} points, df={EXACT_FREQUENCY_ARRAY[1]-EXACT_FREQUENCY_ARRAY[0]:.6f} Hz")
