@@ -2,9 +2,9 @@
 #SBATCH --job-name=PE_SEOBNR_event9
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=48:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --hint=nomultithread
@@ -32,7 +32,7 @@ done
 mkdir -p "${RUNDIR}"
 cd "${RUNDIR}"
 
-EVENT_INDEX=4
+EVENT_INDEX=1
 EVENT_NAME=$(printf "event_%04d" "${EVENT_INDEX}")
 OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run_SEOBNR"
 LABEL="bns_${EVENT_NAME}_seobnr"
@@ -46,7 +46,8 @@ PE_NPOOL="${SLURM_CPUS_PER_TASK:-1}"
 RW_NPOOL=4
 RW_N_CHECKPOINT=2000
 RW_METHOD="weighted"
-RW_USE_NESTED_SAMPLES=0
+RW_CLIP_WEIGHTS=0
+RW_CLIP_MIN_LOG=-745
 SKY_FRAME="detector"
 
 RESUME_DIR="${TMPDIR:-${OUTDIR}}"
@@ -62,6 +63,8 @@ echo "Script: ${SCRIPT}"
 echo "OUTDIR: ${OUTDIR}"
 echo "LABEL: ${LABEL}"
 echo "NLIVE: ${NLIVE}"
+echo "RW_METHOD: ${RW_METHOD}"
+echo "RW_CLIP_WEIGHTS: ${RW_CLIP_WEIGHTS}"
 echo "================================================="
 
 python --version
@@ -81,6 +84,7 @@ ARGS=(
     --rw-checkpoint "${RW_N_CHECKPOINT}"
     --rw-resume-file "${RW_RESUME_FILE}"
     --rw-method "${RW_METHOD}"
+    --rw-clip-min-log "${RW_CLIP_MIN_LOG}"
     --sky-frame "${SKY_FRAME}"
 )
 
@@ -88,8 +92,8 @@ if [ "${ZERO_NOISE}" = "1" ]; then
     ARGS+=(--zero-noise)
 fi
 
-if [ "${RW_USE_NESTED_SAMPLES}" = "1" ]; then
-    ARGS+=(--rw-use-nested-samples)
+if [ "${RW_CLIP_WEIGHTS}" = "1" ]; then
+    ARGS+=(--rw-clip-weights)
 fi
 
 srun -n 1 --cpus-per-task="${PE_NPOOL}" --cpu-bind=cores \
