@@ -32,7 +32,7 @@ done
 mkdir -p "${RUNDIR}"
 cd "${RUNDIR}"
 
-EVENT_INDEX=9
+EVENT_INDEX=4
 EVENT_NAME=$(printf "event_%04d" "${EVENT_INDEX}")
 OUTDIR="/scratch/gpfs/ANDREASB/fy6204/GW/Workspace/outdir_population_run_SEOBNR"
 LABEL="bns_${EVENT_NAME}_seobnr"
