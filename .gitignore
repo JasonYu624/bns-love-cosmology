@@ -29,6 +29,8 @@ outdir_*/
 event9*/
 rb_*/
 hyperpe_*/
+enforce_convergence1/
+waveform_compare_outputs/
 
 # resume/checkpoint files and binary results
 *_resume.*
@@ -50,6 +52,11 @@ merged_*.json
 *_all_params_corner.png
 *_corner.png
 
+# figures: ignore ALL plot outputs (regenerable from scripts + posteriors)
+figures/
+*.png
+*.pdf
+
 # --- Optional large data (uncomment if you prefer to ignore these) ---
 cosmic_explorer_*.txt
 *.interferometer
@@ -59,6 +66,8 @@ cosmic_explorer_*.txt
 # then commit the removal. Adjust patterns above as needed for your workflow.
 
 mixed_background_3g_relbin.py
-*.tex
 gwtc3*
 rb_*.ipynb
+
+# --- Working notes / docs (kept local, not pushed) ---
+docs/
